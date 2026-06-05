@@ -47,6 +47,22 @@
 
       <p id="audio-detail" class="audio-detail" hidden></p>
 
+      <section class="tracking-strip" aria-label="Pitch tracking">
+        <div class="pitcher-control">
+          <label for="pitcher-select">Pitcher</label>
+          <select id="pitcher-select" class="pitcher-select"></select>
+          <div class="pitcher-actions">
+            <button id="add-pitcher" class="mini-button" type="button">Add</button>
+            <button id="rename-pitcher" class="mini-button" type="button">Rename</button>
+          </div>
+        </div>
+        <div class="game-actions">
+          <span id="game-label" class="game-label">Game pending</span>
+          <button id="new-game" class="mini-button" type="button">New Game</button>
+          <button id="export-csv" class="mini-button" type="button">Export CSV</button>
+        </div>
+      </section>
+
       <section class="field-grid" aria-label="Pitch call builder">
         <div class="panel">
           <div class="panel-heading">
@@ -62,6 +78,36 @@
             <span id="selected-pitch" class="selected-label">No pitch</span>
           </div>
           <div id="zone-options" class="option-grid zone-grid"></div>
+        </div>
+      </section>
+
+      <section class="panel result-panel" aria-label="Pitch result">
+        <div class="panel-heading">
+          <h2>Result</h2>
+          <span id="pending-result-label" class="selected-label">No pitch pending</span>
+        </div>
+        <div id="result-options" class="option-grid result-grid"></div>
+      </section>
+
+      <section class="analytics-grid" aria-label="Pitch analytics">
+        <div class="panel stats-panel">
+          <div class="panel-heading">
+            <h2>Stats</h2>
+            <div class="scope-toggle" role="group" aria-label="Stats scope">
+              <button id="stats-current" class="scope-button" type="button" data-stats-scope="game" aria-pressed="true">Game</button>
+              <button id="stats-cumulative" class="scope-button" type="button" data-stats-scope="cumulative" aria-pressed="false">Cumulative</button>
+            </div>
+          </div>
+          <div id="stats-summary" class="stats-summary"></div>
+          <div id="pitch-stats" class="pitch-stats"></div>
+        </div>
+
+        <div class="panel recent-panel">
+          <div class="panel-heading">
+            <h2>Recent</h2>
+            <button id="undo-last" class="text-button" type="button" disabled>Undo Last</button>
+          </div>
+          <ol id="recent-log" class="recent-log"></ol>
         </div>
       </section>
 
