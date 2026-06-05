@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0f5f46">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Pitch Caller">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Pitch Caller</title>
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" href="./icons/icon-192.png">
+    <link rel="apple-touch-icon" href="./icons/icon-192.png">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app-shell" aria-labelledby="app-title">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">One-way catcher audio</p>
+          <h1 id="app-title">Pitch Caller</h1>
+        </div>
+        <div class="status-stack" aria-live="polite">
+          <span id="audio-status" class="status-pill status-idle">Locked</span>
+          <span id="cache-status" class="cache-status">Cache pending</span>
+        </div>
+      </header>
+
+      <section class="control-strip" aria-label="Audio controls">
+        <button id="arm-audio" class="command-button primary" type="button">
+          <span class="button-mark" aria-hidden="true">A</span>
+          <span>Arm Audio</span>
+        </button>
+        <button id="test-audio" class="command-button" type="button" disabled>
+          <span class="button-mark" aria-hidden="true">T</span>
+          <span>Test</span>
+        </button>
+        <button id="replay-last" class="command-button" type="button" disabled>
+          <span class="button-mark" aria-hidden="true">R</span>
+          <span>Replay</span>
+        </button>
+        <button id="lock-toggle" class="command-button danger" type="button" disabled aria-pressed="false">
+          <span class="button-mark" aria-hidden="true">L</span>
+          <span>Mute/Lock</span>
+        </button>
+      </section>
+
+      <p id="audio-detail" class="audio-detail" hidden></p>
+
+      <section class="field-grid" aria-label="Pitch call builder">
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>Pitch</h2>
+            <button id="clear-call" class="text-button" type="button" disabled>Clear</button>
+          </div>
+          <div id="pitch-options" class="option-grid pitch-grid"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-heading">
+            <h2>Zone</h2>
+            <span id="selected-pitch" class="selected-label">No pitch</span>
+          </div>
+          <div id="zone-options" class="option-grid zone-grid"></div>
+        </div>
+      </section>
+
+      <section class="last-call" aria-live="polite" aria-label="Last call">
+        <span class="last-label">Last</span>
+        <strong id="last-call-text">None</strong>
+      </section>
+    </main>
+
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
