@@ -1,7 +1,7 @@
 importScripts("./config.js");
 
 const config = self.PITCH_CALLER_CONFIG;
-const SERVICE_WORKER_BUILD = "2026.06.05-v2";
+const SERVICE_WORKER_BUILD = "2026.06.05-v3";
 const CACHE_NAME = `pitch-caller-${config.version}-${SERVICE_WORKER_BUILD}`;
 const APP_SHELL = [
   "./",
