@@ -3,6 +3,9 @@
 
   const config = globalThis.PITCH_CALLER_CONFIG;
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  const STORAGE_KEY = "pitch-caller-v3";
+  const STORAGE_SCHEMA = 1;
+
   const state = {
     audioContext: null,
     buffers: new Map(),
@@ -13,7 +16,10 @@
     lastCall: null,
     ready: false,
     locked: false,
-    wakeLock: null
+    wakeLock: null,
+    data: loadTrackerState(),
+    statsScope: "game",
+    pendingEventId: null
   };
 
   const els = {
@@ -27,8 +33,22 @@
     clearCall: document.getElementById("clear-call"),
     pitchOptions: document.getElementById("pitch-options"),
     zoneOptions: document.getElementById("zone-options"),
+    resultOptions: document.getElementById("result-options"),
     selectedPitch: document.getElementById("selected-pitch"),
-    lastCallText: document.getElementById("last-call-text")
+    lastCallText: document.getElementById("last-call-text"),
+    pitcherSelect: document.getElementById("pitcher-select"),
+    addPitcher: document.getElementById("add-pitcher"),
+    renamePitcher: document.getElementById("rename-pitcher"),
+    gameLabel: document.getElementById("game-label"),
+    newGame: document.getElementById("new-game"),
+    exportCsv: document.getElementById("export-csv"),
+    pendingResultLabel: document.getElementById("pending-result-label"),
+    statsCurrent: document.getElementById("stats-current"),
+    statsCumulative: document.getElementById("stats-cumulative"),
+    statsSummary: document.getElementById("stats-summary"),
+    pitchStats: document.getElementById("pitch-stats"),
+    undoLast: document.getElementById("undo-last"),
+    recentLog: document.getElementById("recent-log")
   };
 
   function audioPath(pitchId, zoneId) {
@@ -54,8 +74,156 @@
     return collection.find((item) => item.id === id)?.label || id;
   }
 
+  function pitchFor(pitchId) {
+    return config.pitches.find((pitch) => pitch.id === pitchId);
+  }
+
+  function resultFor(resultId) {
+    return config.results.find((result) => result.id === resultId);
+  }
+
   function callLabel(pitchId, zoneId) {
     return `${labelFor(config.pitches, pitchId)} ${labelFor(config.zones, zoneId)}`;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function createId(prefix) {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function createInitialTracker() {
+    const createdAt = nowIso();
+    const pitcherId = createId("pitcher");
+    const gameId = createId("game");
+
+    return {
+      schemaVersion: STORAGE_SCHEMA,
+      activePitcherId: pitcherId,
+      currentGameId: gameId,
+      pitchers: [
+        {
+          id: pitcherId,
+          name: "Pitcher 1",
+          createdAt
+        }
+      ],
+      games: [
+        {
+          id: gameId,
+          startedAt: createdAt
+        }
+      ],
+      events: []
+    };
+  }
+
+  function loadTrackerState() {
+    try {
+      const stored = window.localStorage.getItem(STORAGE_KEY);
+      if (!stored) {
+        return createInitialTracker();
+      }
+
+      return normalizeTracker(JSON.parse(stored));
+    } catch (error) {
+      console.warn("Could not load pitch tracking data.", error);
+      return createInitialTracker();
+    }
+  }
+
+  function normalizeTracker(value) {
+    const fallback = createInitialTracker();
+    if (!value || typeof value !== "object") {
+      return fallback;
+    }
+
+    const pitchers = Array.isArray(value.pitchers)
+      ? value.pitchers
+        .filter((pitcher) => pitcher && typeof pitcher.id === "string")
+        .map((pitcher) => ({
+          id: pitcher.id,
+          name: normalizeName(pitcher.name) || "Pitcher",
+          createdAt: typeof pitcher.createdAt === "string" ? pitcher.createdAt : nowIso()
+        }))
+      : [];
+
+    const games = Array.isArray(value.games)
+      ? value.games
+        .filter((game) => game && typeof game.id === "string")
+        .map((game) => ({
+          id: game.id,
+          startedAt: typeof game.startedAt === "string" ? game.startedAt : nowIso()
+        }))
+      : [];
+
+    const events = Array.isArray(value.events)
+      ? value.events
+        .filter((event) =>
+          event &&
+          typeof event.id === "string" &&
+          typeof event.gameId === "string" &&
+          typeof event.timestamp === "string" &&
+          typeof event.pitcherId === "string" &&
+          typeof event.pitchId === "string" &&
+          typeof event.zoneId === "string"
+        )
+        .map((event) => ({
+          id: event.id,
+          gameId: event.gameId,
+          timestamp: event.timestamp,
+          pitcherId: event.pitcherId,
+          pitchId: event.pitchId,
+          zoneId: event.zoneId,
+          resultId: typeof event.resultId === "string" && resultFor(event.resultId) ? event.resultId : null
+        }))
+      : [];
+
+    if (!pitchers.length) {
+      pitchers.push(fallback.pitchers[0]);
+    }
+
+    if (!games.length) {
+      games.push(fallback.games[0]);
+    }
+
+    const activePitcherId = pitchers.some((pitcher) => pitcher.id === value.activePitcherId)
+      ? value.activePitcherId
+      : pitchers[0].id;
+    const currentGameId = games.some((game) => game.id === value.currentGameId)
+      ? value.currentGameId
+      : games[games.length - 1].id;
+
+    return {
+      schemaVersion: STORAGE_SCHEMA,
+      activePitcherId,
+      currentGameId,
+      pitchers,
+      games,
+      events
+    };
+  }
+
+  function saveTrackerState() {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+    } catch (error) {
+      console.warn("Could not save pitch tracking data.", error);
+    }
+  }
+
+  function normalizeName(name) {
+    return String(name || "").trim().replace(/\s+/g, " ");
+  }
+
+  function activePitcher() {
+    return state.data.pitchers.find((pitcher) => pitcher.id === state.data.activePitcherId) || state.data.pitchers[0];
+  }
+
+  function currentGame() {
+    return state.data.games.find((game) => game.id === state.data.currentGameId) || state.data.games[0];
   }
 
   function setAudioStatus(text, mode) {
@@ -83,6 +251,7 @@
   function renderOptions() {
     els.pitchOptions.innerHTML = "";
     els.zoneOptions.innerHTML = "";
+    els.resultOptions.innerHTML = "";
 
     for (const pitch of config.pitches) {
       const button = document.createElement("button");
@@ -104,6 +273,17 @@
       button.disabled = !state.ready || state.locked || !state.selectedPitchId;
       button.addEventListener("click", () => callZone(zone.id));
       els.zoneOptions.appendChild(button);
+    }
+
+    for (const result of config.results) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "result-button";
+      button.textContent = result.label;
+      button.dataset.resultId = result.id;
+      button.disabled = !state.pendingEventId;
+      button.addEventListener("click", () => recordResult(result.id));
+      els.resultOptions.appendChild(button);
     }
   }
 
@@ -134,6 +314,170 @@
     for (const button of els.zoneOptions.querySelectorAll(".zone-button")) {
       button.disabled = !state.ready || state.locked || !state.selectedPitchId;
     }
+
+    renderTrackingState();
+  }
+
+  function renderTrackingState() {
+    renderPitcherSelect();
+    renderGameState();
+    renderResultState();
+    renderStats();
+    renderRecentLog();
+  }
+
+  function renderPitcherSelect() {
+    const selectedId = state.data.activePitcherId;
+    els.pitcherSelect.innerHTML = "";
+
+    for (const pitcher of state.data.pitchers) {
+      const option = document.createElement("option");
+      option.value = pitcher.id;
+      option.textContent = pitcher.name;
+      els.pitcherSelect.appendChild(option);
+    }
+
+    els.pitcherSelect.value = selectedId;
+    els.renamePitcher.disabled = !activePitcher();
+  }
+
+  function renderGameState() {
+    const game = currentGame();
+    els.gameLabel.textContent = game ? `Game ${formatDateTime(game.startedAt)}` : "Game pending";
+    els.exportCsv.disabled = state.data.events.length === 0;
+    els.undoLast.disabled = !latestCurrentPitcherEvent();
+
+    const isGameScope = state.statsScope === "game";
+    els.statsCurrent.setAttribute("aria-pressed", String(isGameScope));
+    els.statsCumulative.setAttribute("aria-pressed", String(!isGameScope));
+  }
+
+  function renderResultState() {
+    const pendingEvent = pendingEventForResult();
+    els.pendingResultLabel.textContent = pendingEvent
+      ? `Log result: ${callLabel(pendingEvent.pitchId, pendingEvent.zoneId)}`
+      : "No pitch pending";
+
+    for (const button of els.resultOptions.querySelectorAll(".result-button")) {
+      button.disabled = !pendingEvent;
+    }
+  }
+
+  function renderStats() {
+    const events = scopedEvents();
+    const total = events.length;
+    const offSpeed = events.filter((event) => pitchFor(event.pitchId)?.category === "offSpeed").length;
+    const completed = completedEvents(events);
+    const strikes = completed.filter((event) => resultFor(event.resultId)?.type === "strike").length;
+    const positives = completed.filter((event) => resultFor(event.resultId)?.positive).length;
+
+    els.statsSummary.innerHTML = "";
+    els.statsSummary.appendChild(createStatCard("Pitches", String(total)));
+    els.statsSummary.appendChild(createStatCard("Off-speed", percent(offSpeed, total)));
+    els.statsSummary.appendChild(createStatCard("Strike", percent(strikes, completed.length)));
+    els.statsSummary.appendChild(createStatCard("Positive", percent(positives, completed.length)));
+
+    els.pitchStats.innerHTML = "";
+    for (const pitch of config.pitches) {
+      els.pitchStats.appendChild(createPitchStatRow(pitch, events, total));
+    }
+  }
+
+  function createStatCard(label, value) {
+    const card = document.createElement("div");
+    card.className = "stat-card";
+
+    const labelEl = document.createElement("span");
+    labelEl.textContent = label;
+
+    const valueEl = document.createElement("strong");
+    valueEl.textContent = value;
+
+    card.appendChild(labelEl);
+    card.appendChild(valueEl);
+    return card;
+  }
+
+  function createPitchStatRow(pitch, allEvents, total) {
+    const events = allEvents.filter((event) => event.pitchId === pitch.id);
+    const completed = completedEvents(events);
+    const strikes = completed.filter((event) => resultFor(event.resultId)?.type === "strike").length;
+    const positives = completed.filter((event) => resultFor(event.resultId)?.positive).length;
+
+    const row = document.createElement("article");
+    row.className = "pitch-stat-row";
+
+    const heading = document.createElement("div");
+    heading.className = "pitch-stat-heading";
+
+    const title = document.createElement("strong");
+    title.textContent = pitch.label;
+
+    const usage = document.createElement("span");
+    usage.textContent = `${events.length} pitches | ${percent(events.length, total)} use`;
+
+    heading.appendChild(title);
+    heading.appendChild(usage);
+
+    const metrics = document.createElement("div");
+    metrics.className = "pitch-stat-metrics";
+    metrics.textContent = `Strike ${percent(strikes, completed.length)} | Positive ${percent(positives, completed.length)}`;
+
+    const breakdown = document.createElement("div");
+    breakdown.className = "result-breakdown";
+
+    let hasBreakdown = false;
+    for (const result of config.results) {
+      const count = completed.filter((event) => event.resultId === result.id).length;
+      if (!count) {
+        continue;
+      }
+
+      hasBreakdown = true;
+      const chip = document.createElement("span");
+      chip.textContent = `${result.shortLabel}: ${count}`;
+      breakdown.appendChild(chip);
+    }
+
+    if (!hasBreakdown) {
+      const empty = document.createElement("span");
+      empty.textContent = "No results";
+      breakdown.appendChild(empty);
+    }
+
+    row.appendChild(heading);
+    row.appendChild(metrics);
+    row.appendChild(breakdown);
+    return row;
+  }
+
+  function renderRecentLog() {
+    els.recentLog.innerHTML = "";
+
+    const events = scopedEvents("game").slice().reverse().slice(0, 8);
+    if (!events.length) {
+      const empty = document.createElement("li");
+      empty.className = "recent-empty";
+      empty.textContent = "No pitches this game";
+      els.recentLog.appendChild(empty);
+      return;
+    }
+
+    for (const event of events) {
+      const item = document.createElement("li");
+
+      const main = document.createElement("span");
+      main.className = "recent-main";
+      main.textContent = callLabel(event.pitchId, event.zoneId);
+
+      const meta = document.createElement("span");
+      meta.className = "recent-meta";
+      meta.textContent = `${resultLabel(event.resultId)} | ${formatTime(event.timestamp)}`;
+
+      item.appendChild(main);
+      item.appendChild(meta);
+      els.recentLog.appendChild(item);
+    }
   }
 
   function selectPitch(pitchId) {
@@ -145,6 +489,253 @@
     state.selectedPitchId = null;
     state.lastCall = null;
     renderState();
+  }
+
+  function addPitcher() {
+    const defaultName = `Pitcher ${state.data.pitchers.length + 1}`;
+    const name = normalizeName(window.prompt("Pitcher name", defaultName));
+    if (!name) {
+      return;
+    }
+
+    const pitcher = {
+      id: createId("pitcher"),
+      name,
+      createdAt: nowIso()
+    };
+
+    state.data.pitchers.push(pitcher);
+    state.data.activePitcherId = pitcher.id;
+    state.pendingEventId = latestPendingEventId();
+    saveTrackerState();
+    renderState();
+  }
+
+  function renamePitcher() {
+    const pitcher = activePitcher();
+    if (!pitcher) {
+      return;
+    }
+
+    const name = normalizeName(window.prompt("Pitcher name", pitcher.name));
+    if (!name) {
+      return;
+    }
+
+    pitcher.name = name;
+    saveTrackerState();
+    renderState();
+  }
+
+  function selectActivePitcher() {
+    state.data.activePitcherId = els.pitcherSelect.value;
+    state.pendingEventId = latestPendingEventId();
+    saveTrackerState();
+    renderState();
+  }
+
+  function startNewGame() {
+    const game = {
+      id: createId("game"),
+      startedAt: nowIso()
+    };
+
+    state.data.games.push(game);
+    state.data.currentGameId = game.id;
+    state.pendingEventId = null;
+    state.selectedPitchId = null;
+    state.lastCall = null;
+    saveTrackerState();
+    renderState();
+  }
+
+  function setStatsScope(scope) {
+    state.statsScope = scope === "cumulative" ? "cumulative" : "game";
+    renderState();
+  }
+
+  function logPitchEvent(pitchId, zoneId) {
+    const pitcher = activePitcher();
+    const game = currentGame();
+    if (!pitcher || !game) {
+      return;
+    }
+
+    const event = {
+      id: createId("event"),
+      gameId: game.id,
+      timestamp: nowIso(),
+      pitcherId: pitcher.id,
+      pitchId,
+      zoneId,
+      resultId: null
+    };
+
+    state.data.events.push(event);
+    state.pendingEventId = event.id;
+    saveTrackerState();
+  }
+
+  function rememberCall(pitchId, zoneId) {
+    state.lastCall = { pitchId, zoneId };
+    state.selectedPitchId = null;
+    logPitchEvent(pitchId, zoneId);
+  }
+
+  function recordResult(resultId) {
+    const event = pendingEventForResult();
+    if (!event || !resultFor(resultId)) {
+      return;
+    }
+
+    event.resultId = resultId;
+    state.pendingEventId = null;
+    saveTrackerState();
+    renderState();
+  }
+
+  function undoLastPitch() {
+    const latest = latestCurrentPitcherEvent();
+    if (!latest) {
+      return;
+    }
+
+    state.data.events = state.data.events.filter((event) => event.id !== latest.id);
+    if (state.pendingEventId === latest.id) {
+      state.pendingEventId = null;
+    }
+
+    const previous = latestCurrentPitcherEvent();
+    state.lastCall = previous ? { pitchId: previous.pitchId, zoneId: previous.zoneId } : null;
+    state.pendingEventId = latestPendingEventId();
+    saveTrackerState();
+    renderState();
+  }
+
+  function exportCsv() {
+    const headers = [
+      "gameId",
+      "gameStartedAt",
+      "timestamp",
+      "pitcher",
+      "pitcherId",
+      "pitchId",
+      "pitch",
+      "category",
+      "zoneId",
+      "zone",
+      "resultId",
+      "result"
+    ];
+
+    const rows = state.data.events.map((event) => {
+      const pitcher = state.data.pitchers.find((item) => item.id === event.pitcherId);
+      const game = state.data.games.find((item) => item.id === event.gameId);
+      const pitch = pitchFor(event.pitchId);
+      const result = resultFor(event.resultId);
+
+      return [
+        event.gameId,
+        game?.startedAt || "",
+        event.timestamp,
+        pitcher?.name || "",
+        event.pitcherId,
+        event.pitchId,
+        pitch?.label || event.pitchId,
+        pitch?.category || "",
+        event.zoneId,
+        labelFor(config.zones, event.zoneId),
+        event.resultId || "",
+        result?.label || ""
+      ];
+    });
+
+    const csv = [headers, ...rows].map((row) => row.map(csvValue).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `pitch-caller-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
+  }
+
+  function csvValue(value) {
+    const text = value == null ? "" : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
+  }
+
+  function scopedEvents(scope = state.statsScope) {
+    const pitcher = activePitcher();
+    if (!pitcher) {
+      return [];
+    }
+
+    return state.data.events.filter((event) => {
+      if (event.pitcherId !== pitcher.id) {
+        return false;
+      }
+
+      return scope === "cumulative" || event.gameId === state.data.currentGameId;
+    });
+  }
+
+  function completedEvents(events) {
+    return events.filter((event) => resultFor(event.resultId));
+  }
+
+  function pendingEventForResult() {
+    return state.data.events.find((event) => event.id === state.pendingEventId) || null;
+  }
+
+  function latestPendingEventId() {
+    const latest = latestCurrentPitcherEvent();
+    return latest && !latest.resultId ? latest.id : null;
+  }
+
+  function latestCurrentPitcherEvent() {
+    const events = scopedEvents("game");
+    return events.length ? events[events.length - 1] : null;
+  }
+
+  function percent(count, total) {
+    if (!total) {
+      return "0%";
+    }
+
+    return `${Math.round((count / total) * 100)}%`;
+  }
+
+  function resultLabel(resultId) {
+    return resultFor(resultId)?.label || "No result";
+  }
+
+  function formatDateTime(iso) {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    });
+  }
+
+  function formatTime(iso) {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    return date.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit"
+    });
   }
 
   async function armAudio() {
@@ -371,8 +962,7 @@
     source.start(0);
 
     if (remember) {
-      state.lastCall = { pitchId, zoneId };
-      state.selectedPitchId = null;
+      rememberCall(pitchId, zoneId);
     }
 
     setAudioStatus("Playing", "status-ready");
@@ -406,8 +996,7 @@
     await audio.play();
 
     if (remember) {
-      state.lastCall = { pitchId, zoneId };
-      state.selectedPitchId = null;
+      rememberCall(pitchId, zoneId);
     }
 
     setAudioStatus("Playing", "status-ready");
@@ -505,7 +1094,17 @@
   els.replayLast.addEventListener("click", replayLast);
   els.lockToggle.addEventListener("click", toggleLock);
   els.clearCall.addEventListener("click", clearCall);
+  els.pitcherSelect.addEventListener("change", selectActivePitcher);
+  els.addPitcher.addEventListener("click", addPitcher);
+  els.renamePitcher.addEventListener("click", renamePitcher);
+  els.newGame.addEventListener("click", startNewGame);
+  els.exportCsv.addEventListener("click", exportCsv);
+  els.undoLast.addEventListener("click", undoLastPitch);
+  els.statsCurrent.addEventListener("click", () => setStatsScope("game"));
+  els.statsCumulative.addEventListener("click", () => setStatsScope("cumulative"));
 
+  state.pendingEventId = latestPendingEventId();
+  saveTrackerState();
   renderOptions();
   renderState();
   registerServiceWorker();
