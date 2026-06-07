@@ -2,1110 +2,809 @@
   "use strict";
 
   const config = globalThis.PITCH_CALLER_CONFIG;
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  const STORAGE_KEY = "pitch-caller-v3";
-  const STORAGE_SCHEMA = 1;
+  const STORAGE_KEY = "pitch-caller-v5";
+  const LEGACY_KEY = "pitch-caller-v3";
+  const SCHEMA = 2;
 
-  const state = {
-    audioContext: null,
-    buffers: new Map(),
-    mediaElements: new Map(),
-    currentSource: null,
-    playbackMode: "web-audio",
-    selectedPitchId: null,
-    lastCall: null,
-    ready: false,
-    locked: false,
-    wakeLock: null,
-    data: loadTrackerState(),
-    statsScope: "game",
-    pendingEventId: null
-  };
+  const $ = (id) => document.getElementById(id);
+  const byId = (items, id) => items.find((item) => item.id === id);
+  const clean = (value) => String(value || "").trim().replace(/\s+/g, " ");
+  const now = () => new Date().toISOString();
+  const id = (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const pct = (count, total) => (total ? `${Math.round((count / total) * 100)}%` : "0%");
 
   const els = {
-    audioStatus: document.getElementById("audio-status"),
-    audioDetail: document.getElementById("audio-detail"),
-    cacheStatus: document.getElementById("cache-status"),
-    armAudio: document.getElementById("arm-audio"),
-    testAudio: document.getElementById("test-audio"),
-    replayLast: document.getElementById("replay-last"),
-    lockToggle: document.getElementById("lock-toggle"),
-    clearCall: document.getElementById("clear-call"),
-    pitchOptions: document.getElementById("pitch-options"),
-    zoneOptions: document.getElementById("zone-options"),
-    resultOptions: document.getElementById("result-options"),
-    selectedPitch: document.getElementById("selected-pitch"),
-    lastCallText: document.getElementById("last-call-text"),
-    pitcherSelect: document.getElementById("pitcher-select"),
-    addPitcher: document.getElementById("add-pitcher"),
-    renamePitcher: document.getElementById("rename-pitcher"),
-    gameLabel: document.getElementById("game-label"),
-    newGame: document.getElementById("new-game"),
-    exportCsv: document.getElementById("export-csv"),
-    pendingResultLabel: document.getElementById("pending-result-label"),
-    statsCurrent: document.getElementById("stats-current"),
-    statsCumulative: document.getElementById("stats-cumulative"),
-    statsSummary: document.getElementById("stats-summary"),
-    pitchStats: document.getElementById("pitch-stats"),
-    undoLast: document.getElementById("undo-last"),
-    recentLog: document.getElementById("recent-log")
+    version: $("version-label"),
+    audioStatus: $("audio-status"),
+    audioDetail: $("audio-detail"),
+    cacheStatus: $("cache-status"),
+    arm: $("arm-audio"),
+    test: $("test-audio"),
+    replay: $("replay-last"),
+    lock: $("lock-toggle"),
+    clear: $("clear-call"),
+    tabs: Array.from(document.querySelectorAll(".tab-button")),
+    panels: Array.from(document.querySelectorAll(".tab-panel")),
+    callOpponent: $("call-opponent"),
+    callPitcher: $("call-pitcher"),
+    callBatter: $("call-batter"),
+    prevBatter: $("prev-batter"),
+    nextBatter: $("next-batter"),
+    batterPrev: $("batter-prev"),
+    batterNext: $("batter-next"),
+    pitches: $("pitch-options"),
+    zones: $("zone-options"),
+    results: $("result-options"),
+    specials: $("special-call-options"),
+    selectedPitch: $("selected-pitch"),
+    pendingLabel: $("pending-result-label"),
+    batterTitle: $("batter-title"),
+    currentSeq: $("current-sequence"),
+    previousSeq: $("previous-sequences"),
+    statsContext: $("stats-context"),
+    statsCurrent: $("stats-current"),
+    statsCumulative: $("stats-cumulative"),
+    statsSummary: $("stats-summary"),
+    pitchStats: $("pitch-stats"),
+    opponent: $("opponent-name"),
+    gameSelect: $("game-select"),
+    gameLabel: $("game-label"),
+    newGame: $("new-game"),
+    pitcherSelect: $("pitcher-select"),
+    addPitcher: $("add-pitcher"),
+    renamePitcher: $("rename-pitcher"),
+    deletePitcher: $("delete-pitcher"),
+    lineup: $("lineup-editor"),
+    activeSlot: $("active-slot-label"),
+    storageCount: $("storage-count"),
+    exportCsv: $("export-csv"),
+    clearData: $("clear-data")
   };
 
-  function audioPath(pitchId, zoneId) {
-    return `${config.audioBasePath}/${pitchId}-${zoneId}.${config.audioExtension}`;
+  const state = {
+    data: loadData(),
+    ready: false,
+    locked: false,
+    tab: "call",
+    statsScope: "game",
+    selectedPitchId: null,
+    pendingEventId: null,
+    lastCall: null,
+    audio: new Map()
+  };
+
+  function pitch(id) { return byId(config.pitches, id); }
+  function zone(id) { return byId(config.zones, id); }
+  function result(id) { return byId(config.results, id); }
+  function pitcher() { return byId(state.data.pitchers, state.data.activePitcherId) || state.data.pitchers[0]; }
+  function game() { return byId(state.data.games, state.data.currentGameId) || state.data.games[0]; }
+  function batter() {
+    const g = game();
+    return g?.lineup.find((item) => item.slot === g.activeBatterSlot) || g?.lineup[0] || null;
   }
 
-  function callKey(pitchId, zoneId) {
-    return `${pitchId}:${zoneId}`;
+  function makeLineup(gameId) {
+    return Array.from({ length: 9 }, (_, index) => {
+      const slot = index + 1;
+      return { id: `${gameId}_batter_${slot}`, slot, name: `Batter ${slot}`, number: "" };
+    });
+  }
+
+  function makeGame(opponentName = "") {
+    const gameId = id("game");
+    return {
+      id: gameId,
+      startedAt: now(),
+      opponentName: clean(opponentName),
+      lineup: makeLineup(gameId),
+      activeBatterSlot: 1,
+      activePlateAppearanceId: null
+    };
+  }
+
+  function makeInitial() {
+    const pitcherId = id("pitcher");
+    const g = makeGame();
+    return {
+      schemaVersion: SCHEMA,
+      activePitcherId: pitcherId,
+      currentGameId: g.id,
+      pitchers: [{ id: pitcherId, name: "Pitcher 1", createdAt: now() }],
+      games: [g],
+      plateAppearances: [],
+      pitchEvents: []
+    };
+  }
+
+  function normalizeGame(raw) {
+    const g = makeGame(raw?.opponentName || "");
+    g.id = typeof raw?.id === "string" ? raw.id : g.id;
+    g.startedAt = typeof raw?.startedAt === "string" ? raw.startedAt : g.startedAt;
+    g.activeBatterSlot = Number.isInteger(raw?.activeBatterSlot) && raw.activeBatterSlot >= 1 && raw.activeBatterSlot <= 9 ? raw.activeBatterSlot : 1;
+    g.activePlateAppearanceId = typeof raw?.activePlateAppearanceId === "string" ? raw.activePlateAppearanceId : null;
+    const existing = Array.isArray(raw?.lineup) ? raw.lineup : [];
+    g.lineup = makeLineup(g.id).map((fallback) => {
+      const match = existing.find((item) => Number(item?.slot) === fallback.slot) || {};
+      return {
+        id: typeof match.id === "string" ? match.id : fallback.id,
+        slot: fallback.slot,
+        name: clean(match.name) || fallback.name,
+        number: clean(match.number)
+      };
+    });
+    return g;
+  }
+
+  function normalize(raw) {
+    const fallback = makeInitial();
+    if (!raw || typeof raw !== "object") return fallback;
+    const pitchers = (Array.isArray(raw.pitchers) ? raw.pitchers : [])
+      .filter((item) => item && typeof item.id === "string")
+      .map((item) => ({ id: item.id, name: clean(item.name) || "Pitcher", createdAt: item.createdAt || now() }));
+    const games = (Array.isArray(raw.games) ? raw.games : []).filter((item) => item?.id).map(normalizeGame);
+    const data = {
+      schemaVersion: SCHEMA,
+      activePitcherId: raw.activePitcherId,
+      currentGameId: raw.currentGameId,
+      pitchers: pitchers.length ? pitchers : fallback.pitchers,
+      games: games.length ? games : fallback.games,
+      plateAppearances: (Array.isArray(raw.plateAppearances) ? raw.plateAppearances : []).filter((pa) => pa?.id && pa?.gameId).map((pa) => ({
+        id: pa.id,
+        gameId: pa.gameId,
+        batterId: typeof pa.batterId === "string" ? pa.batterId : null,
+        pitcherId: typeof pa.pitcherId === "string" ? pa.pitcherId : null,
+        startedAt: pa.startedAt || now(),
+        endedAt: pa.endedAt || null,
+        terminalResultId: result(pa.terminalResultId) ? pa.terminalResultId : null
+      })),
+      pitchEvents: (Array.isArray(raw.pitchEvents) ? raw.pitchEvents : raw.events || []).filter((event) => event?.id).map((event) => ({
+        id: event.id,
+        gameId: event.gameId || raw.currentGameId || fallback.currentGameId,
+        timestamp: event.timestamp || now(),
+        pitcherId: event.pitcherId || raw.activePitcherId || fallback.activePitcherId,
+        batterId: typeof event.batterId === "string" ? event.batterId : null,
+        plateAppearanceId: typeof event.plateAppearanceId === "string" ? event.plateAppearanceId : null,
+        pitchId: event.pitchId,
+        zoneId: typeof event.zoneId === "string" ? event.zoneId : null,
+        resultId: mapResult(event.resultId)
+      })).filter((event) => pitch(event.pitchId))
+    };
+    if (!byId(data.pitchers, data.activePitcherId)) data.activePitcherId = data.pitchers[0].id;
+    if (!byId(data.games, data.currentGameId)) data.currentGameId = data.games[data.games.length - 1].id;
+    return data;
+  }
+
+  function mapResult(resultId) {
+    const legacy = {
+      strike_looking: "called_strike",
+      strike_swinging: "swinging_strike",
+      foul: "foul",
+      ball: "ball",
+      in_play_out: "ground_out",
+      hit: "ground_hit",
+      hbp: "hbp"
+    };
+    return result(resultId) ? resultId : legacy[resultId] || null;
+  }
+
+  function loadData() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_KEY);
+      return stored ? normalize(JSON.parse(stored)) : makeInitial();
+    } catch (error) {
+      console.warn("Could not load tracking data.", error);
+      return makeInitial();
+    }
+  }
+
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+  }
+
+  function fmt(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function batterLabel(item = batter()) {
+    if (!item) return "No batter";
+    return `${item.slot}. ${item.name || `Batter ${item.slot}`}${item.number ? ` #${item.number}` : ""}`;
+  }
+
+  function pitchText(event) {
+    const p = pitch(event.pitchId);
+    if (!p) return "Unknown Pitch";
+    return p.requiresZone === false ? p.label : `${p.label} ${zone(event.zoneId)?.label || ""}`.trim();
+  }
+
+  function audioPathForPitch(p, zoneId) {
+    return p.requiresZone === false ? `${config.audioBasePath}/${p.audioFile}` : `${config.audioBasePath}/${p.id}-${zoneId}.${config.audioExtension}`;
+  }
+
+  function audioKeyForPitch(p, zoneId) {
+    return p.requiresZone === false ? `pitch:${p.id}` : `pitch:${p.id}:${zoneId}`;
   }
 
   function allCalls() {
-    return config.pitches.flatMap((pitch) =>
-      config.zones.map((zone) => ({
-        pitch,
-        zone,
-        path: audioPath(pitch.id, zone.id),
-        key: callKey(pitch.id, zone.id)
-      }))
-    );
+    const pitches = config.pitches.flatMap((p) => p.requiresZone === false
+      ? [{ key: audioKeyForPitch(p), path: audioPathForPitch(p), label: p.label }]
+      : config.zones.map((z) => ({ key: audioKeyForPitch(p, z.id), path: audioPathForPitch(p, z.id), label: `${p.label} ${z.label}` })));
+    const specials = (config.specialCalls || []).map((call) => ({
+      key: `special:${call.id}`,
+      path: `${config.audioBasePath}/${call.audioFile}`,
+      label: call.label
+    }));
+    return [...pitches, ...specials];
   }
 
-  function labelFor(collection, id) {
-    return collection.find((item) => item.id === id)?.label || id;
-  }
-
-  function pitchFor(pitchId) {
-    return config.pitches.find((pitch) => pitch.id === pitchId);
-  }
-
-  function resultFor(resultId) {
-    return config.results.find((result) => result.id === resultId);
-  }
-
-  function callLabel(pitchId, zoneId) {
-    return `${labelFor(config.pitches, pitchId)} ${labelFor(config.zones, zoneId)}`;
-  }
-
-  function nowIso() {
-    return new Date().toISOString();
-  }
-
-  function createId(prefix) {
-    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  function createInitialTracker() {
-    const createdAt = nowIso();
-    const pitcherId = createId("pitcher");
-    const gameId = createId("game");
-
-    return {
-      schemaVersion: STORAGE_SCHEMA,
-      activePitcherId: pitcherId,
-      currentGameId: gameId,
-      pitchers: [
-        {
-          id: pitcherId,
-          name: "Pitcher 1",
-          createdAt
-        }
-      ],
-      games: [
-        {
-          id: gameId,
-          startedAt: createdAt
-        }
-      ],
-      events: []
-    };
-  }
-
-  function loadTrackerState() {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (!stored) {
-        return createInitialTracker();
-      }
-
-      return normalizeTracker(JSON.parse(stored));
-    } catch (error) {
-      console.warn("Could not load pitch tracking data.", error);
-      return createInitialTracker();
-    }
-  }
-
-  function normalizeTracker(value) {
-    const fallback = createInitialTracker();
-    if (!value || typeof value !== "object") {
-      return fallback;
-    }
-
-    const pitchers = Array.isArray(value.pitchers)
-      ? value.pitchers
-        .filter((pitcher) => pitcher && typeof pitcher.id === "string")
-        .map((pitcher) => ({
-          id: pitcher.id,
-          name: normalizeName(pitcher.name) || "Pitcher",
-          createdAt: typeof pitcher.createdAt === "string" ? pitcher.createdAt : nowIso()
-        }))
-      : [];
-
-    const games = Array.isArray(value.games)
-      ? value.games
-        .filter((game) => game && typeof game.id === "string")
-        .map((game) => ({
-          id: game.id,
-          startedAt: typeof game.startedAt === "string" ? game.startedAt : nowIso()
-        }))
-      : [];
-
-    const events = Array.isArray(value.events)
-      ? value.events
-        .filter((event) =>
-          event &&
-          typeof event.id === "string" &&
-          typeof event.gameId === "string" &&
-          typeof event.timestamp === "string" &&
-          typeof event.pitcherId === "string" &&
-          typeof event.pitchId === "string" &&
-          typeof event.zoneId === "string"
-        )
-        .map((event) => ({
-          id: event.id,
-          gameId: event.gameId,
-          timestamp: event.timestamp,
-          pitcherId: event.pitcherId,
-          pitchId: event.pitchId,
-          zoneId: event.zoneId,
-          resultId: typeof event.resultId === "string" && resultFor(event.resultId) ? event.resultId : null
-        }))
-      : [];
-
-    if (!pitchers.length) {
-      pitchers.push(fallback.pitchers[0]);
-    }
-
-    if (!games.length) {
-      games.push(fallback.games[0]);
-    }
-
-    const activePitcherId = pitchers.some((pitcher) => pitcher.id === value.activePitcherId)
-      ? value.activePitcherId
-      : pitchers[0].id;
-    const currentGameId = games.some((game) => game.id === value.currentGameId)
-      ? value.currentGameId
-      : games[games.length - 1].id;
-
-    return {
-      schemaVersion: STORAGE_SCHEMA,
-      activePitcherId,
-      currentGameId,
-      pitchers,
-      games,
-      events
-    };
-  }
-
-  function saveTrackerState() {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
-    } catch (error) {
-      console.warn("Could not save pitch tracking data.", error);
-    }
-  }
-
-  function normalizeName(name) {
-    return String(name || "").trim().replace(/\s+/g, " ");
-  }
-
-  function activePitcher() {
-    return state.data.pitchers.find((pitcher) => pitcher.id === state.data.activePitcherId) || state.data.pitchers[0];
-  }
-
-  function currentGame() {
-    return state.data.games.find((game) => game.id === state.data.currentGameId) || state.data.games[0];
-  }
-
-  function setAudioStatus(text, mode) {
+  function setStatus(text, mode = "status-idle") {
     els.audioStatus.textContent = text;
-    els.audioStatus.className = `status-pill ${mode || "status-idle"}`;
+    els.audioStatus.className = `status-pill ${mode}`;
   }
 
-  function setCacheStatus(text) {
-    els.cacheStatus.textContent = text;
+  function render() {
+    const g = game();
+    const b = batter();
+    const p = pitcher();
+    const pending = pendingEvent();
+    els.version.textContent = `Version ${config.version}`;
+    els.audioDetail.hidden = !els.audioDetail.textContent;
+    els.cacheStatus.textContent = location.protocol === "file:" ? "Local preview" : "Offline ready";
+    els.test.disabled = !state.ready || state.locked;
+    els.replay.disabled = !state.lastCall || !state.ready || state.locked;
+    els.lock.disabled = !state.ready;
+    els.lock.setAttribute("aria-pressed", String(state.locked));
+    els.clear.disabled = !state.selectedPitchId;
+
+    els.tabs.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.tab === state.tab)));
+    els.panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== state.tab; });
+
+    els.callOpponent.textContent = g?.opponentName || "Opponent not set";
+    els.callPitcher.textContent = p?.name || "No pitcher";
+    els.callBatter.textContent = batterLabel(b);
+    els.batterTitle.textContent = `Vs ${batterLabel(b)}`;
+    els.selectedPitch.textContent = state.selectedPitchId ? pitch(state.selectedPitchId).label : "No pitch";
+    els.pendingLabel.textContent = pending ? pitchText(pending) : "No pitch pending";
+    els.opponent.value = g?.opponentName || "";
+    els.gameLabel.textContent = g ? `Started ${fmt(g.startedAt)}` : "Game pending";
+    els.activeSlot.textContent = `Slot ${g?.activeBatterSlot || 1} active`;
+    els.storageCount.textContent = `${state.data.pitchEvents.length} ${state.data.pitchEvents.length === 1 ? "pitch" : "pitches"}`;
+
+    renderPitchButtons();
+    renderZones();
+    renderResults();
+    renderSpecials();
+    renderGameSelect();
+    renderPitcherSelect();
+    renderLineup();
+    renderSequences();
+    renderStats();
   }
 
-  function setAudioDetail(text, mode) {
-    if (!text) {
-      els.audioDetail.hidden = true;
-      els.audioDetail.textContent = "";
-      els.audioDetail.className = "audio-detail";
-      return;
-    }
-
-    els.audioDetail.hidden = false;
-    els.audioDetail.textContent = text;
-    els.audioDetail.className = `audio-detail ${mode || ""}`.trim();
-  }
-
-  function renderOptions() {
-    els.pitchOptions.innerHTML = "";
-    els.zoneOptions.innerHTML = "";
-    els.resultOptions.innerHTML = "";
-
-    for (const pitch of config.pitches) {
+  function renderPitchButtons() {
+    els.pitches.innerHTML = "";
+    config.pitches.forEach((p) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "option-button pitch-button";
-      button.textContent = pitch.label;
-      button.dataset.pitchId = pitch.id;
-      button.setAttribute("aria-pressed", String(state.selectedPitchId === pitch.id));
-      button.addEventListener("click", () => selectPitch(pitch.id));
-      els.pitchOptions.appendChild(button);
-    }
-
-    for (const zone of config.zones) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `option-button zone-button zone-${zone.id}`;
-      button.textContent = zone.label;
-      button.dataset.zoneId = zone.id;
-      button.disabled = !state.ready || state.locked || !state.selectedPitchId;
-      button.addEventListener("click", () => callZone(zone.id));
-      els.zoneOptions.appendChild(button);
-    }
-
-    for (const result of config.results) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "result-button";
-      button.textContent = result.label;
-      button.dataset.resultId = result.id;
-      button.disabled = !state.pendingEventId;
-      button.addEventListener("click", () => recordResult(result.id));
-      els.resultOptions.appendChild(button);
-    }
+      button.dataset.pitchId = p.id;
+      button.textContent = p.label;
+      button.disabled = !state.ready || state.locked;
+      button.setAttribute("aria-pressed", String(state.selectedPitchId === p.id));
+      button.addEventListener("click", () => selectPitch(p.id));
+      els.pitches.append(button);
+    });
   }
 
-  function renderState() {
-    const selectedLabel = state.selectedPitchId
-      ? labelFor(config.pitches, state.selectedPitchId)
-      : "No pitch";
-
-    els.selectedPitch.textContent = selectedLabel;
-    els.testAudio.disabled = !state.ready || state.locked;
-    els.replayLast.disabled = !state.ready || state.locked || !state.lastCall;
-    els.lockToggle.disabled = !state.ready;
-    els.lockToggle.setAttribute("aria-pressed", String(state.locked));
-    els.lockToggle.querySelector("span:last-child").textContent = state.locked ? "Unlock" : "Mute/Lock";
-    els.clearCall.disabled = !state.selectedPitchId && !state.lastCall;
-
-    if (state.lastCall) {
-      els.lastCallText.textContent = callLabel(state.lastCall.pitchId, state.lastCall.zoneId);
-    } else {
-      els.lastCallText.textContent = "None";
-    }
-
-    for (const button of els.pitchOptions.querySelectorAll(".pitch-button")) {
-      const isSelected = button.dataset.pitchId === state.selectedPitchId;
-      button.setAttribute("aria-pressed", String(isSelected));
-    }
-
-    for (const button of els.zoneOptions.querySelectorAll(".zone-button")) {
-      button.disabled = !state.ready || state.locked || !state.selectedPitchId;
-    }
-
-    renderTrackingState();
+  function renderZones() {
+    els.zones.innerHTML = "";
+    const selected = pitch(state.selectedPitchId);
+    config.zones.forEach((z) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `option-button zone-button zone-${z.id}`;
+      button.dataset.zoneId = z.id;
+      button.textContent = z.label;
+      button.disabled = !selected || selected.requiresZone === false || !state.ready || state.locked;
+      button.addEventListener("click", () => callPitch(selected.id, z.id));
+      els.zones.append(button);
+    });
   }
 
-  function renderTrackingState() {
-    renderPitcherSelect();
-    renderGameState();
-    renderResultState();
-    renderStats();
-    renderRecentLog();
+  function renderResults() {
+    els.results.innerHTML = "";
+    const pending = Boolean(pendingEvent());
+    config.resultGroups.forEach((group) => {
+      const section = document.createElement("section");
+      section.className = "result-group";
+      const label = document.createElement("span");
+      label.className = "result-group-title";
+      label.textContent = group.label;
+      const grid = document.createElement("div");
+      grid.className = "result-grid";
+      config.results.filter((item) => item.group === group.id).forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "result-button";
+        button.dataset.resultId = item.id;
+        button.textContent = item.label;
+        button.disabled = !pending;
+        button.addEventListener("click", () => recordResult(item.id));
+        grid.append(button);
+      });
+      section.append(label, grid);
+      els.results.append(section);
+    });
+  }
+
+  function renderSpecials() {
+    els.specials.innerHTML = "";
+    (config.specialCalls || []).forEach((call) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "special-button";
+      button.dataset.specialId = call.id;
+      button.textContent = call.label;
+      button.disabled = !state.ready || state.locked;
+      button.addEventListener("click", () => playSpecial(call.id));
+      els.specials.append(button);
+    });
+  }
+
+  function renderGameSelect() {
+    const active = state.data.currentGameId;
+    els.gameSelect.innerHTML = "";
+    state.data.games.forEach((g, index) => {
+      const option = document.createElement("option");
+      option.value = g.id;
+      option.textContent = `${g.opponentName || `Game ${index + 1}`} - ${fmt(g.startedAt)}`;
+      els.gameSelect.append(option);
+    });
+    els.gameSelect.value = active;
   }
 
   function renderPitcherSelect() {
-    const selectedId = state.data.activePitcherId;
+    const active = state.data.activePitcherId;
     els.pitcherSelect.innerHTML = "";
-
-    for (const pitcher of state.data.pitchers) {
+    state.data.pitchers.forEach((item) => {
       const option = document.createElement("option");
-      option.value = pitcher.id;
-      option.textContent = pitcher.name;
-      els.pitcherSelect.appendChild(option);
-    }
-
-    els.pitcherSelect.value = selectedId;
-    els.renamePitcher.disabled = !activePitcher();
+      option.value = item.id;
+      option.textContent = item.name;
+      els.pitcherSelect.append(option);
+    });
+    els.pitcherSelect.value = active;
   }
 
-  function renderGameState() {
-    const game = currentGame();
-    els.gameLabel.textContent = game ? `Game ${formatDateTime(game.startedAt)}` : "Game pending";
-    els.exportCsv.disabled = state.data.events.length === 0;
-    els.undoLast.disabled = !latestCurrentPitcherEvent();
-
-    const isGameScope = state.statsScope === "game";
-    els.statsCurrent.setAttribute("aria-pressed", String(isGameScope));
-    els.statsCumulative.setAttribute("aria-pressed", String(!isGameScope));
+  function renderLineup() {
+    const g = game();
+    els.lineup.innerHTML = "";
+    g.lineup.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "lineup-row";
+      const slot = document.createElement("span");
+      slot.className = "lineup-slot";
+      slot.textContent = item.slot;
+      const name = document.createElement("input");
+      name.className = "text-input";
+      name.type = "text";
+      name.value = item.name;
+      name.dataset.batterNameSlot = String(item.slot);
+      name.placeholder = `Batter ${item.slot}`;
+      name.addEventListener("input", () => updateLineup(item.slot, "name", name.value));
+      const number = document.createElement("input");
+      number.className = "text-input number-input";
+      number.type = "text";
+      number.value = item.number;
+      number.dataset.batterNumberSlot = String(item.slot);
+      number.placeholder = "#";
+      number.addEventListener("input", () => updateLineup(item.slot, "number", number.value));
+      row.append(slot, name, number);
+      els.lineup.append(row);
+    });
   }
 
-  function renderResultState() {
-    const pendingEvent = pendingEventForResult();
-    els.pendingResultLabel.textContent = pendingEvent
-      ? `Log result: ${callLabel(pendingEvent.pitchId, pendingEvent.zoneId)}`
-      : "No pitch pending";
-
-    for (const button of els.resultOptions.querySelectorAll(".result-button")) {
-      button.disabled = !pendingEvent;
+  function renderSequences() {
+    const g = game();
+    const b = batter();
+    const open = activePa();
+    const openEvents = open && open.batterId === b?.id ? eventsForPa(open.id) : [];
+    fillSequence(els.currentSeq, openEvents, "No active sequence");
+    const previous = state.data.plateAppearances
+      .filter((pa) => pa.gameId === g.id && pa.batterId === b?.id && pa.endedAt)
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    els.previousSeq.innerHTML = "";
+    if (!previous.length) {
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = "No previous plate appearances";
+      els.previousSeq.append(li);
+      return;
     }
+    previous.forEach((pa) => {
+      const li = document.createElement("li");
+      const terminal = result(pa.terminalResultId);
+      li.textContent = `${fmt(pa.startedAt)}: ${eventsForPa(pa.id).map(sequenceText).join(", ")}${terminal ? ` - ${terminal.label}` : ""}`;
+      els.previousSeq.append(li);
+    });
+  }
+
+  function fillSequence(list, events, emptyText) {
+    list.innerHTML = "";
+    if (!events.length) {
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = emptyText;
+      list.append(li);
+      return;
+    }
+    events.forEach((event) => {
+      const li = document.createElement("li");
+      li.textContent = sequenceText(event);
+      list.append(li);
+    });
+  }
+
+  function sequenceText(event) {
+    const r = result(event.resultId);
+    return `${pitchText(event)}${r ? ` (${r.shortLabel || r.label})` : ""}`;
   }
 
   function renderStats() {
-    const events = scopedEvents();
-    const total = events.length;
-    const offSpeed = events.filter((event) => pitchFor(event.pitchId)?.category === "offSpeed").length;
-    const completed = completedEvents(events);
-    const strikes = completed.filter((event) => resultFor(event.resultId)?.type === "strike").length;
-    const positives = completed.filter((event) => resultFor(event.resultId)?.positive).length;
-
+    const activePitcher = pitcher();
+    const g = game();
+    const scoped = state.data.pitchEvents.filter((event) =>
+      event.pitcherId === activePitcher?.id &&
+      (state.statsScope === "cumulative" || event.gameId === g.id)
+    );
+    const completed = scoped.filter((event) => result(event.resultId));
+    const strikes = completed.filter((event) => result(event.resultId).countsAsStrike).length;
+    const positive = completed.filter((event) => result(event.resultId).positive).length;
+    const offSpeed = scoped.filter((event) => pitch(event.pitchId)?.category === "offSpeed").length;
+    els.statsCurrent.setAttribute("aria-pressed", String(state.statsScope === "game"));
+    els.statsCumulative.setAttribute("aria-pressed", String(state.statsScope === "cumulative"));
+    els.statsContext.textContent = `${activePitcher?.name || "Pitcher"} - ${state.statsScope === "game" ? (g.opponentName || "Current game") : "All games"}`;
     els.statsSummary.innerHTML = "";
-    els.statsSummary.appendChild(createStatCard("Pitches", String(total)));
-    els.statsSummary.appendChild(createStatCard("Off-speed", percent(offSpeed, total)));
-    els.statsSummary.appendChild(createStatCard("Strike", percent(strikes, completed.length)));
-    els.statsSummary.appendChild(createStatCard("Positive", percent(positives, completed.length)));
-
+    [
+      ["Pitches", scoped.length],
+      ["Off-Speed", pct(offSpeed, scoped.length)],
+      ["Strike", pct(strikes, completed.length)],
+      ["Positive", pct(positive, completed.length)]
+    ].forEach(([label, value]) => {
+      const card = document.createElement("div");
+      card.className = "stat-card";
+      card.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
+      els.statsSummary.append(card);
+    });
     els.pitchStats.innerHTML = "";
-    for (const pitch of config.pitches) {
-      els.pitchStats.appendChild(createPitchStatRow(pitch, events, total));
-    }
-  }
-
-  function createStatCard(label, value) {
-    const card = document.createElement("div");
-    card.className = "stat-card";
-
-    const labelEl = document.createElement("span");
-    labelEl.textContent = label;
-
-    const valueEl = document.createElement("strong");
-    valueEl.textContent = value;
-
-    card.appendChild(labelEl);
-    card.appendChild(valueEl);
-    return card;
-  }
-
-  function createPitchStatRow(pitch, allEvents, total) {
-    const events = allEvents.filter((event) => event.pitchId === pitch.id);
-    const completed = completedEvents(events);
-    const strikes = completed.filter((event) => resultFor(event.resultId)?.type === "strike").length;
-    const positives = completed.filter((event) => resultFor(event.resultId)?.positive).length;
-
-    const row = document.createElement("article");
-    row.className = "pitch-stat-row";
-
-    const heading = document.createElement("div");
-    heading.className = "pitch-stat-heading";
-
-    const title = document.createElement("strong");
-    title.textContent = pitch.label;
-
-    const usage = document.createElement("span");
-    usage.textContent = `${events.length} pitches | ${percent(events.length, total)} use`;
-
-    heading.appendChild(title);
-    heading.appendChild(usage);
-
-    const metrics = document.createElement("div");
-    metrics.className = "pitch-stat-metrics";
-    metrics.textContent = `Strike ${percent(strikes, completed.length)} | Positive ${percent(positives, completed.length)}`;
-
-    const breakdown = document.createElement("div");
-    breakdown.className = "result-breakdown";
-
-    let hasBreakdown = false;
-    for (const result of config.results) {
-      const count = completed.filter((event) => event.resultId === result.id).length;
-      if (!count) {
-        continue;
-      }
-
-      hasBreakdown = true;
-      const chip = document.createElement("span");
-      chip.textContent = `${result.shortLabel}: ${count}`;
-      breakdown.appendChild(chip);
-    }
-
-    if (!hasBreakdown) {
-      const empty = document.createElement("span");
-      empty.textContent = "No results";
-      breakdown.appendChild(empty);
-    }
-
-    row.appendChild(heading);
-    row.appendChild(metrics);
-    row.appendChild(breakdown);
-    return row;
-  }
-
-  function renderRecentLog() {
-    els.recentLog.innerHTML = "";
-
-    const events = scopedEvents("game").slice().reverse().slice(0, 8);
-    if (!events.length) {
-      const empty = document.createElement("li");
-      empty.className = "recent-empty";
-      empty.textContent = "No pitches this game";
-      els.recentLog.appendChild(empty);
+    if (!scoped.length) {
+      els.pitchStats.innerHTML = `<p class="empty-state">No pitches logged for this view.</p>`;
       return;
     }
+    config.pitches.forEach((p) => {
+      const rows = scoped.filter((event) => event.pitchId === p.id);
+      if (!rows.length) return;
+      const done = rows.filter((event) => result(event.resultId));
+      const terminal = done.filter((event) => result(event.resultId).terminal);
+      const counts = config.results
+        .map((r) => [r.shortLabel || r.label, done.filter((event) => event.resultId === r.id).length])
+        .filter(([, count]) => count)
+        .map(([label, count]) => `${label} ${count}`)
+        .join(", ");
+      const row = document.createElement("article");
+      row.className = "pitch-stat-row";
+      row.innerHTML = `
+        <div><strong>${p.label}</strong><span>${rows.length} calls - ${pct(rows.length, scoped.length)} usage</span></div>
+        <div class="metric-line">
+          <span>Strike ${pct(done.filter((event) => result(event.resultId).countsAsStrike).length, done.length)}</span>
+          <span>Positive ${pct(done.filter((event) => result(event.resultId).positive).length, done.length)}</span>
+          <span>K ${pct(terminal.filter((event) => result(event.resultId).terminalType === "k").length, terminal.length)}</span>
+          <span>GB ${pct(terminal.filter((event) => result(event.resultId).terminalType === "ground").length, terminal.length)}</span>
+          <span>FB ${pct(terminal.filter((event) => result(event.resultId).terminalType === "fly").length, terminal.length)}</span>
+        </div>
+        <p>${counts || "No completed results"}</p>`;
+      els.pitchStats.append(row);
+    });
+  }
 
-    for (const event of events) {
-      const item = document.createElement("li");
+  function pendingEvent() {
+    return byId(state.data.pitchEvents, state.pendingEventId);
+  }
 
-      const main = document.createElement("span");
-      main.className = "recent-main";
-      main.textContent = callLabel(event.pitchId, event.zoneId);
+  function activePa() {
+    const g = game();
+    const pa = g?.activePlateAppearanceId ? byId(state.data.plateAppearances, g.activePlateAppearanceId) : null;
+    return pa && !pa.endedAt ? pa : null;
+  }
 
-      const meta = document.createElement("span");
-      meta.className = "recent-meta";
-      meta.textContent = `${resultLabel(event.resultId)} | ${formatTime(event.timestamp)}`;
+  function eventsForPa(paId) {
+    return state.data.pitchEvents.filter((event) => event.plateAppearanceId === paId).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  }
 
-      item.appendChild(main);
-      item.appendChild(meta);
-      els.recentLog.appendChild(item);
-    }
+  function ensurePa() {
+    const g = game();
+    const b = batter();
+    const p = pitcher();
+    const open = activePa();
+    if (open && open.batterId === b.id && open.pitcherId === p.id) return open;
+    const pa = { id: id("pa"), gameId: g.id, batterId: b.id, pitcherId: p.id, startedAt: now(), endedAt: null, terminalResultId: null };
+    state.data.plateAppearances.push(pa);
+    g.activePlateAppearanceId = pa.id;
+    return pa;
   }
 
   function selectPitch(pitchId) {
-    state.selectedPitchId = pitchId;
-    renderState();
-  }
-
-  function clearCall() {
-    state.selectedPitchId = null;
-    state.lastCall = null;
-    renderState();
-  }
-
-  function addPitcher() {
-    const defaultName = `Pitcher ${state.data.pitchers.length + 1}`;
-    const name = normalizeName(window.prompt("Pitcher name", defaultName));
-    if (!name) {
+    const p = pitch(pitchId);
+    if (!p || !state.ready || state.locked) return;
+    if (p.requiresZone === false) {
+      callPitch(p.id, null);
       return;
     }
-
-    const pitcher = {
-      id: createId("pitcher"),
-      name,
-      createdAt: nowIso()
-    };
-
-    state.data.pitchers.push(pitcher);
-    state.data.activePitcherId = pitcher.id;
-    state.pendingEventId = latestPendingEventId();
-    saveTrackerState();
-    renderState();
+    state.selectedPitchId = p.id;
+    render();
   }
 
-  function renamePitcher() {
-    const pitcher = activePitcher();
-    if (!pitcher) {
-      return;
-    }
-
-    const name = normalizeName(window.prompt("Pitcher name", pitcher.name));
-    if (!name) {
-      return;
-    }
-
-    pitcher.name = name;
-    saveTrackerState();
-    renderState();
-  }
-
-  function selectActivePitcher() {
-    state.data.activePitcherId = els.pitcherSelect.value;
-    state.pendingEventId = latestPendingEventId();
-    saveTrackerState();
-    renderState();
-  }
-
-  function startNewGame() {
-    const game = {
-      id: createId("game"),
-      startedAt: nowIso()
-    };
-
-    state.data.games.push(game);
-    state.data.currentGameId = game.id;
-    state.pendingEventId = null;
-    state.selectedPitchId = null;
-    state.lastCall = null;
-    saveTrackerState();
-    renderState();
-  }
-
-  function setStatsScope(scope) {
-    state.statsScope = scope === "cumulative" ? "cumulative" : "game";
-    renderState();
-  }
-
-  function logPitchEvent(pitchId, zoneId) {
-    const pitcher = activePitcher();
-    const game = currentGame();
-    if (!pitcher || !game) {
-      return;
-    }
-
-    const event = {
-      id: createId("event"),
-      gameId: game.id,
-      timestamp: nowIso(),
-      pitcherId: pitcher.id,
-      pitchId,
-      zoneId,
-      resultId: null
-    };
-
-    state.data.events.push(event);
-    state.pendingEventId = event.id;
-    saveTrackerState();
-  }
-
-  function rememberCall(pitchId, zoneId) {
-    state.lastCall = { pitchId, zoneId };
-    state.selectedPitchId = null;
-    logPitchEvent(pitchId, zoneId);
+  function callPitch(pitchId, zoneId) {
+    const p = pitch(pitchId);
+    if (!p || !state.ready || state.locked || (p.requiresZone !== false && !zone(zoneId))) return;
+    const call = { key: audioKeyForPitch(p, zoneId), path: audioPathForPitch(p, zoneId), label: p.requiresZone === false ? p.label : `${p.label} ${zone(zoneId).label}` };
+    playCall(call, () => {
+      const g = game();
+      const b = batter();
+      const pa = ensurePa();
+      const event = {
+        id: id("event"),
+        gameId: g.id,
+        timestamp: now(),
+        pitcherId: pitcher().id,
+        batterId: b.id,
+        plateAppearanceId: pa.id,
+        pitchId: p.id,
+        zoneId: zoneId || null,
+        resultId: null
+      };
+      state.data.pitchEvents.push(event);
+      state.pendingEventId = event.id;
+      state.selectedPitchId = null;
+      save();
+    });
   }
 
   function recordResult(resultId) {
-    const event = pendingEventForResult();
-    if (!event || !resultFor(resultId)) {
-      return;
-    }
-
-    event.resultId = resultId;
+    const r = result(resultId);
+    const event = pendingEvent();
+    if (!r || !event) return;
+    event.resultId = r.id;
     state.pendingEventId = null;
-    saveTrackerState();
-    renderState();
+    if (r.terminal) {
+      const pa = byId(state.data.plateAppearances, event.plateAppearanceId);
+      if (pa) {
+        pa.endedAt = now();
+        pa.terminalResultId = r.id;
+      }
+      const g = game();
+      g.activePlateAppearanceId = null;
+      advanceBatter(1, false);
+    }
+    save();
+    render();
   }
 
-  function undoLastPitch() {
-    const latest = latestCurrentPitcherEvent();
-    if (!latest) {
-      return;
-    }
+  function advanceBatter(delta, shouldRender = true) {
+    const g = game();
+    g.activeBatterSlot = ((g.activeBatterSlot - 1 + delta + 9) % 9) + 1;
+    g.activePlateAppearanceId = null;
+    state.pendingEventId = null;
+    save();
+    if (shouldRender) render();
+  }
 
-    state.data.events = state.data.events.filter((event) => event.id !== latest.id);
-    if (state.pendingEventId === latest.id) {
+  function updateLineup(slot, field, value) {
+    const item = game().lineup.find((b) => b.slot === slot);
+    if (!item) return;
+    item[field] = clean(value);
+    save();
+    renderContext();
+  }
+
+  function renderContext() {
+    els.callOpponent.textContent = game().opponentName || "Opponent not set";
+    els.callBatter.textContent = batterLabel();
+    els.batterTitle.textContent = `Vs ${batterLabel()}`;
+  }
+
+  function updateOpponent() {
+    game().opponentName = clean(els.opponent.value);
+    save();
+    renderContext();
+    renderStats();
+  }
+
+  function startGame() {
+    const g = makeGame(window.prompt("Opponent name", "") || "");
+    state.data.games.push(g);
+    state.data.currentGameId = g.id;
+    state.pendingEventId = null;
+    state.selectedPitchId = null;
+    save();
+    render();
+  }
+
+  function selectGame() {
+    if (byId(state.data.games, els.gameSelect.value)) {
+      state.data.currentGameId = els.gameSelect.value;
       state.pendingEventId = null;
+      state.selectedPitchId = null;
+      save();
+      render();
     }
+  }
 
-    const previous = latestCurrentPitcherEvent();
-    state.lastCall = previous ? { pitchId: previous.pitchId, zoneId: previous.zoneId } : null;
-    state.pendingEventId = latestPendingEventId();
-    saveTrackerState();
-    renderState();
+  function addPitcher() {
+    const name = clean(window.prompt("Pitcher name", `Pitcher ${state.data.pitchers.length + 1}`));
+    if (!name) return;
+    const item = { id: id("pitcher"), name, createdAt: now() };
+    state.data.pitchers.push(item);
+    state.data.activePitcherId = item.id;
+    game().activePlateAppearanceId = null;
+    state.pendingEventId = null;
+    save();
+    render();
+  }
+
+  function renamePitcher() {
+    const item = pitcher();
+    const name = clean(window.prompt("Pitcher name", item.name));
+    if (!name) return;
+    item.name = name;
+    save();
+    render();
+  }
+
+  function deletePitcher() {
+    const item = pitcher();
+    if (!window.confirm(`Delete ${item.name} and all pitches logged for this pitcher?`)) return;
+    const paIds = new Set(state.data.plateAppearances.filter((pa) => pa.pitcherId === item.id).map((pa) => pa.id));
+    state.data.pitchers = state.data.pitchers.filter((p) => p.id !== item.id);
+    state.data.pitchEvents = state.data.pitchEvents.filter((event) => event.pitcherId !== item.id);
+    state.data.plateAppearances = state.data.plateAppearances.filter((pa) => pa.pitcherId !== item.id);
+    state.data.games.forEach((g) => {
+      if (paIds.has(g.activePlateAppearanceId)) g.activePlateAppearanceId = null;
+    });
+    if (!state.data.pitchers.length) state.data.pitchers.push({ id: id("pitcher"), name: "Pitcher 1", createdAt: now() });
+    state.data.activePitcherId = state.data.pitchers[0].id;
+    state.pendingEventId = null;
+    save();
+    render();
+  }
+
+  function selectPitcher() {
+    if (!byId(state.data.pitchers, els.pitcherSelect.value)) return;
+    state.data.activePitcherId = els.pitcherSelect.value;
+    game().activePlateAppearanceId = null;
+    state.pendingEventId = null;
+    save();
+    render();
+  }
+
+  function clearTracking() {
+    if (!window.confirm("Clear all pitchers, games, batters, and pitch logs from this phone?")) return;
+    state.data = makeInitial();
+    state.pendingEventId = null;
+    state.selectedPitchId = null;
+    save();
+    render();
   }
 
   function exportCsv() {
-    const headers = [
-      "gameId",
-      "gameStartedAt",
-      "timestamp",
-      "pitcher",
-      "pitcherId",
-      "pitchId",
-      "pitch",
-      "category",
-      "zoneId",
-      "zone",
-      "resultId",
-      "result"
-    ];
-
-    const rows = state.data.events.map((event) => {
-      const pitcher = state.data.pitchers.find((item) => item.id === event.pitcherId);
-      const game = state.data.games.find((item) => item.id === event.gameId);
-      const pitch = pitchFor(event.pitchId);
-      const result = resultFor(event.resultId);
-
-      return [
-        event.gameId,
-        game?.startedAt || "",
-        event.timestamp,
-        pitcher?.name || "",
-        event.pitcherId,
-        event.pitchId,
-        pitch?.label || event.pitchId,
-        pitch?.category || "",
-        event.zoneId,
-        labelFor(config.zones, event.zoneId),
-        event.resultId || "",
-        result?.label || ""
-      ];
+    const headers = ["gameId", "opponent", "gameStartedAt", "plateAppearanceId", "batterSlot", "batterName", "batterNumber", "timestamp", "pitcher", "pitcherId", "pitchId", "pitch", "zoneId", "zone", "resultId", "result", "terminalResult"];
+    const rows = state.data.pitchEvents.map((event) => {
+      const g = byId(state.data.games, event.gameId);
+      const b = g?.lineup.find((item) => item.id === event.batterId);
+      const p = byId(state.data.pitchers, event.pitcherId);
+      const r = result(event.resultId);
+      const pa = byId(state.data.plateAppearances, event.plateAppearanceId);
+      const terminal = result(pa?.terminalResultId);
+      return [event.gameId, g?.opponentName || "", g?.startedAt || "", event.plateAppearanceId || "", b?.slot || "", b?.name || "", b?.number || "", event.timestamp, p?.name || "", event.pitcherId, event.pitchId, pitch(event.pitchId)?.label || event.pitchId, event.zoneId || "", event.zoneId ? zone(event.zoneId)?.label || "" : "", event.resultId || "", r?.label || "", terminal?.label || ""];
     });
-
-    const csv = [headers, ...rows].map((row) => row.map(csvValue).join(",")).join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `pitch-caller-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
-  }
-
-  function csvValue(value) {
-    const text = value == null ? "" : String(value);
-    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
-  }
-
-  function scopedEvents(scope = state.statsScope) {
-    const pitcher = activePitcher();
-    if (!pitcher) {
-      return [];
-    }
-
-    return state.data.events.filter((event) => {
-      if (event.pitcherId !== pitcher.id) {
-        return false;
-      }
-
-      return scope === "cumulative" || event.gameId === state.data.currentGameId;
-    });
-  }
-
-  function completedEvents(events) {
-    return events.filter((event) => resultFor(event.resultId));
-  }
-
-  function pendingEventForResult() {
-    return state.data.events.find((event) => event.id === state.pendingEventId) || null;
-  }
-
-  function latestPendingEventId() {
-    const latest = latestCurrentPitcherEvent();
-    return latest && !latest.resultId ? latest.id : null;
-  }
-
-  function latestCurrentPitcherEvent() {
-    const events = scopedEvents("game");
-    return events.length ? events[events.length - 1] : null;
-  }
-
-  function percent(count, total) {
-    if (!total) {
-      return "0%";
-    }
-
-    return `${Math.round((count / total) * 100)}%`;
-  }
-
-  function resultLabel(resultId) {
-    return resultFor(resultId)?.label || "No result";
-  }
-
-  function formatDateTime(iso) {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) {
-      return "";
-    }
-
-    return date.toLocaleString([], {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit"
-    });
-  }
-
-  function formatTime(iso) {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) {
-      return "";
-    }
-
-    return date.toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit"
-    });
+    const csv = [headers, ...rows].map((row) => row.map((value) => {
+      const text = value == null ? "" : String(value);
+      return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
+    }).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pitch-caller-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   async function armAudio() {
-    if (state.ready) {
-      setAudioStatus(state.locked ? "Locked" : "Ready", state.locked ? "status-danger" : "status-ready");
-      return;
-    }
-
-    if (!AudioContextClass && typeof Audio === "undefined") {
-      setAudioStatus("No audio", "status-danger");
-      setAudioDetail("This browser does not expose a usable audio playback API.", "error");
-      return;
-    }
-
-    els.armAudio.disabled = true;
-    setAudioStatus("Loading", "status-loading");
-    setAudioDetail("");
-
-    try {
-      if (isFilePreview()) {
-        await armMediaElementAudio("File preview mode: audio can play, but offline PWA caching only works from localhost or an HTTPS host.");
-        return;
-      }
-
-      state.audioContext = state.audioContext || new AudioContextClass();
-      await state.audioContext.resume();
-      unlockAudioContext();
-      await loadAudioBuffers();
-      state.playbackMode = "web-audio";
-      state.ready = true;
-      state.locked = false;
-      await requestWakeLock();
-      setAudioStatus("Ready", "status-ready");
-    } catch (error) {
-      console.error(error);
-      if (await tryMediaElementFallback(error)) {
-        return;
-      }
-
-      els.armAudio.disabled = false;
-      setAudioStatus("Audio error", "status-danger");
-      setAudioDetail(describeArmError(error), "error");
-    }
-
-    renderState();
-  }
-
-  function isFilePreview() {
-    return window.location.protocol === "file:";
-  }
-
-  async function armMediaElementAudio(detail) {
-    await loadMediaElements();
-    state.playbackMode = "media";
+    els.arm.disabled = true;
+    setStatus("Loading", "status-loading");
+    allCalls().forEach((call) => {
+      if (state.audio.has(call.key)) return;
+      const audio = new Audio(call.path);
+      audio.preload = "auto";
+      audio.playsInline = true;
+      audio.load();
+      state.audio.set(call.key, audio);
+    });
     state.ready = true;
     state.locked = false;
-    setAudioStatus("Ready", "status-ready");
-    setAudioDetail(detail);
-    renderState();
+    setStatus("Ready", "status-ready");
+    render();
   }
 
-  async function tryMediaElementFallback(error) {
-    if (typeof Audio === "undefined") {
-      return false;
-    }
-
+  async function playCall(call, onStart) {
+    if (!state.ready || state.locked) return;
+    const audio = state.audio.get(call.key) || new Audio(call.path);
+    state.audio.set(call.key, audio);
+    state.lastCall = call;
+    if (typeof onStart === "function") onStart();
     try {
-      await armMediaElementAudio(`Using browser media playback because Web Audio preload failed: ${shortError(error)}`);
-      return true;
-    } catch (fallbackError) {
-      console.error(fallbackError);
-      setAudioDetail(`${describeArmError(error)} Fallback also failed: ${shortError(fallbackError)}`, "error");
-      return false;
+      audio.pause();
+      audio.currentTime = 0;
+      await audio.play();
+      setStatus("Playing", "status-ready");
+      setTimeout(() => !state.locked && setStatus("Ready", "status-ready"), Math.max(900, Number.isFinite(audio.duration) ? audio.duration * 1000 : 900));
+    } catch (error) {
+      setStatus("Ready", "status-ready");
     }
+    render();
   }
 
-  function shortError(error) {
-    return error?.message || String(error || "Unknown error");
-  }
-
-  function describeArmError(error) {
-    const message = shortError(error);
-
-    if (isFilePreview() || /failed to fetch|cors|origin 'null'|file:/i.test(message)) {
-      return "The page appears to be opened as a local file, and the browser blocked local audio loading. Use the built-in file preview mode, or run it from localhost/HTTPS for the real PWA offline test.";
-    }
-
-    return message;
-  }
-
-  function unlockAudioContext() {
-    const source = state.audioContext.createOscillator();
-    const gain = state.audioContext.createGain();
-    gain.gain.value = 0;
-    source.connect(gain);
-    gain.connect(state.audioContext.destination);
-    source.start(0);
-    source.stop(state.audioContext.currentTime + 0.04);
-  }
-
-  async function loadAudioBuffers() {
-    const calls = allCalls();
-    await Promise.all(calls.map(async (call) => {
-      if (state.buffers.has(call.key)) {
-        return;
-      }
-
-      const response = await fetch(call.path, { cache: "force-cache" });
-      if (!response.ok) {
-        throw new Error(`Missing audio clip: ${call.path}`);
-      }
-
-      const bytes = await response.arrayBuffer();
-      const buffer = await decodeAudioData(bytes);
-      state.buffers.set(call.key, buffer);
-    }));
-  }
-
-  async function loadMediaElements() {
-    const calls = allCalls();
-    await Promise.all(calls.map(loadMediaElement));
-  }
-
-  function loadMediaElement(call) {
-    if (state.mediaElements.has(call.key)) {
-      return Promise.resolve();
-    }
-
-    const audio = new Audio();
-    audio.preload = "auto";
-    audio.playsInline = true;
-    audio.src = call.path;
-    state.mediaElements.set(call.key, audio);
-
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve();
-      };
-      const fail = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        reject(new Error(`Cannot load audio clip: ${call.path}`));
-      };
-      const cleanup = () => {
-        window.clearTimeout(timeout);
-        audio.removeEventListener("canplaythrough", finish);
-        audio.removeEventListener("loadeddata", finish);
-        audio.removeEventListener("error", fail);
-      };
-      const timeout = window.setTimeout(finish, 2500);
-
-      audio.addEventListener("canplaythrough", finish);
-      audio.addEventListener("loadeddata", finish);
-      audio.addEventListener("error", fail);
-
-      if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        finish();
-      } else {
-        audio.load();
-      }
-    });
-  }
-
-  function decodeAudioData(bytes) {
-    return new Promise((resolve, reject) => {
-      const result = state.audioContext.decodeAudioData(bytes.slice(0), resolve, reject);
-      if (result && typeof result.then === "function") {
-        result.then(resolve, reject);
-      }
-    });
-  }
-
-  async function callZone(zoneId) {
-    if (!state.selectedPitchId) {
-      return;
-    }
-
-    await playCall(state.selectedPitchId, zoneId, true);
-  }
-
-  async function playCall(pitchId, zoneId, remember) {
-    if (!state.ready || state.locked) {
-      return;
-    }
-
-    if (state.playbackMode === "media") {
-      await playMediaCall(pitchId, zoneId, remember);
-      return;
-    }
-
-    await state.audioContext.resume();
-
-    const key = callKey(pitchId, zoneId);
-    const buffer = state.buffers.get(key);
-    if (!buffer) {
-      setAudioStatus("Missing clip", "status-danger");
-      return;
-    }
-
-    stopCurrentSource();
-
-    const source = state.audioContext.createBufferSource();
-    const gain = state.audioContext.createGain();
-    gain.gain.value = 1;
-    source.buffer = buffer;
-    source.connect(gain);
-    gain.connect(state.audioContext.destination);
-    source.onended = () => {
-      if (state.currentSource === source) {
-        state.currentSource = null;
-      }
-    };
-
-    state.currentSource = source;
-    source.start(0);
-
-    if (remember) {
-      rememberCall(pitchId, zoneId);
-    }
-
-    setAudioStatus("Playing", "status-ready");
-    window.setTimeout(() => {
-      if (state.ready && !state.locked) {
-        setAudioStatus("Ready", "status-ready");
-      }
-    }, Math.max(900, buffer.duration * 1000));
-
-    renderState();
-  }
-
-  async function playMediaCall(pitchId, zoneId, remember) {
-    const key = callKey(pitchId, zoneId);
-    const audio = state.mediaElements.get(key);
-    if (!audio) {
-      setAudioStatus("Missing clip", "status-danger");
-      setAudioDetail(`Missing audio clip: ${audioPath(pitchId, zoneId)}`, "error");
-      return;
-    }
-
-    stopCurrentSource();
-    audio.currentTime = 0;
-    audio.onended = () => {
-      if (state.currentSource === audio) {
-        state.currentSource = null;
-      }
-    };
-
-    state.currentSource = audio;
-    await audio.play();
-
-    if (remember) {
-      rememberCall(pitchId, zoneId);
-    }
-
-    setAudioStatus("Playing", "status-ready");
-    const duration = Number.isFinite(audio.duration) ? audio.duration * 1000 : 900;
-    window.setTimeout(() => {
-      if (state.ready && !state.locked) {
-        setAudioStatus("Ready", "status-ready");
-      }
-    }, Math.max(900, duration));
-
-    renderState();
-  }
-
-  function stopCurrentSource() {
-    if (!state.currentSource) {
-      return;
-    }
-
-    try {
-      if (typeof state.currentSource.pause === "function") {
-        state.currentSource.pause();
-        state.currentSource.currentTime = 0;
-        state.currentSource = null;
-        return;
-      }
-
-      state.currentSource.stop(0);
-    } catch {
-      // The source may have already ended.
-    }
-    state.currentSource = null;
+  function playSpecial(callId) {
+    const call = byId(config.specialCalls || [], callId);
+    if (!call) return;
+    playCall({ key: `special:${call.id}`, path: `${config.audioBasePath}/${call.audioFile}`, label: call.label });
   }
 
   function replayLast() {
-    if (!state.lastCall) {
-      return;
-    }
-
-    playCall(state.lastCall.pitchId, state.lastCall.zoneId, false);
+    if (state.lastCall) playCall(state.lastCall);
   }
 
   function toggleLock() {
-    if (!state.ready) {
-      return;
-    }
-
     state.locked = !state.locked;
-    stopCurrentSource();
-    setAudioStatus(state.locked ? "Locked" : "Ready", state.locked ? "status-danger" : "status-ready");
-    renderState();
+    setStatus(state.locked ? "Locked" : "Ready", state.locked ? "status-danger" : "status-ready");
+    render();
   }
 
-  async function requestWakeLock() {
-    if (!("wakeLock" in navigator)) {
-      return;
-    }
-
-    try {
-      state.wakeLock = await navigator.wakeLock.request("screen");
-      state.wakeLock.addEventListener("release", () => {
-        state.wakeLock = null;
-      });
-    } catch {
-      state.wakeLock = null;
-    }
+  function registerWorker() {
+    if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+    navigator.serviceWorker.register("./sw.js").then(() => navigator.serviceWorker.ready).catch(() => {
+      els.cacheStatus.textContent = "Cache unavailable";
+    });
   }
 
-  function registerServiceWorker() {
-    if (isFilePreview()) {
-      setCacheStatus("Local preview");
-      return;
-    }
-
-    if (!("serviceWorker" in navigator)) {
-      setCacheStatus("Online only");
-      return;
-    }
-
-    navigator.serviceWorker.register("./sw.js")
-      .then(() => navigator.serviceWorker.ready)
-      .then(() => setCacheStatus("Offline ready"))
-      .catch(() => setCacheStatus("Cache unavailable"));
-  }
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.ready && !state.wakeLock) {
-      requestWakeLock();
-    }
+  els.arm.addEventListener("click", armAudio);
+  els.test.addEventListener("click", () => {
+    const p = pitch(config.testCall.pitchId);
+    playCall({ key: audioKeyForPitch(p, config.testCall.zoneId), path: audioPathForPitch(p, config.testCall.zoneId), label: `${p.label} ${zone(config.testCall.zoneId).label}` });
   });
-
-  els.armAudio.addEventListener("click", armAudio);
-  els.testAudio.addEventListener("click", () => {
-    playCall(config.testCall.pitchId, config.testCall.zoneId, false);
-  });
-  els.replayLast.addEventListener("click", replayLast);
-  els.lockToggle.addEventListener("click", toggleLock);
-  els.clearCall.addEventListener("click", clearCall);
-  els.pitcherSelect.addEventListener("change", selectActivePitcher);
+  els.replay.addEventListener("click", replayLast);
+  els.lock.addEventListener("click", toggleLock);
+  els.clear.addEventListener("click", () => { state.selectedPitchId = null; render(); });
+  els.tabs.forEach((button) => button.addEventListener("click", () => { state.tab = button.dataset.tab; render(); }));
+  els.prevBatter.addEventListener("click", () => advanceBatter(-1));
+  els.nextBatter.addEventListener("click", () => advanceBatter(1));
+  els.batterPrev.addEventListener("click", () => advanceBatter(-1));
+  els.batterNext.addEventListener("click", () => advanceBatter(1));
+  els.opponent.addEventListener("input", updateOpponent);
+  els.gameSelect.addEventListener("change", selectGame);
+  els.newGame.addEventListener("click", startGame);
+  els.pitcherSelect.addEventListener("change", selectPitcher);
   els.addPitcher.addEventListener("click", addPitcher);
   els.renamePitcher.addEventListener("click", renamePitcher);
-  els.newGame.addEventListener("click", startNewGame);
+  els.deletePitcher.addEventListener("click", deletePitcher);
+  els.clearData.addEventListener("click", clearTracking);
   els.exportCsv.addEventListener("click", exportCsv);
-  els.undoLast.addEventListener("click", undoLastPitch);
-  els.statsCurrent.addEventListener("click", () => setStatsScope("game"));
-  els.statsCumulative.addEventListener("click", () => setStatsScope("cumulative"));
+  els.statsCurrent.addEventListener("click", () => { state.statsScope = "game"; renderStats(); });
+  els.statsCumulative.addEventListener("click", () => { state.statsScope = "cumulative"; renderStats(); });
 
-  state.pendingEventId = latestPendingEventId();
-  saveTrackerState();
-  renderOptions();
-  renderState();
-  registerServiceWorker();
+  save();
+  setStatus("Locked", "status-idle");
+  render();
+  registerWorker();
 })();

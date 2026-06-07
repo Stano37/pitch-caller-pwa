@@ -1,7 +1,7 @@
 importScripts("./config.js");
 
 const config = self.PITCH_CALLER_CONFIG;
-const SERVICE_WORKER_BUILD = "2026.06.05-v4";
+const SERVICE_WORKER_BUILD = "2026.06.06-v5";
 const CACHE_NAME = `pitch-caller-${config.version}-${SERVICE_WORKER_BUILD}`;
 const APP_SHELL = [
   "./",
@@ -18,9 +18,20 @@ function audioPath(pitchId, zoneId) {
   return `./${config.audioBasePath}/${pitchId}-${zoneId}.${config.audioExtension}`;
 }
 
-const AUDIO_ASSETS = config.pitches.flatMap((pitch) =>
-  config.zones.map((zone) => audioPath(pitch.id, zone.id))
-);
+function callAudioPath(call) {
+  return `./${config.audioBasePath}/${call.audioFile}`;
+}
+
+const PITCH_AUDIO_ASSETS = config.pitches.flatMap((pitch) => {
+  if (pitch.requiresZone === false) {
+    return [callAudioPath(pitch)];
+  }
+
+  return config.zones.map((zone) => audioPath(pitch.id, zone.id));
+});
+
+const SPECIAL_AUDIO_ASSETS = (config.specialCalls || []).map(callAudioPath);
+const AUDIO_ASSETS = [...PITCH_AUDIO_ASSETS, ...SPECIAL_AUDIO_ASSETS];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

@@ -19,6 +19,7 @@
         <div>
           <p class="eyebrow">One-way catcher audio</p>
           <h1 id="app-title">Pitch Caller</h1>
+          <span id="version-label" class="version-label">Version pending</span>
         </div>
         <div class="status-stack" aria-live="polite">
           <span id="audio-status" class="status-pill status-idle">Locked</span>
@@ -47,50 +48,92 @@
 
       <p id="audio-detail" class="audio-detail" hidden></p>
 
-      <section class="tracking-strip" aria-label="Pitch tracking">
-        <div class="pitcher-control">
-          <label for="pitcher-select">Pitcher</label>
-          <select id="pitcher-select" class="pitcher-select"></select>
-          <div class="pitcher-actions">
-            <button id="add-pitcher" class="mini-button" type="button">Add</button>
-            <button id="rename-pitcher" class="mini-button" type="button">Rename</button>
-          </div>
-        </div>
-        <div class="game-actions">
-          <span id="game-label" class="game-label">Game pending</span>
-          <button id="new-game" class="mini-button" type="button">New Game</button>
-          <button id="export-csv" class="mini-button" type="button">Export CSV</button>
-        </div>
-      </section>
+      <nav class="tab-strip" aria-label="Views">
+        <button class="tab-button" type="button" data-tab="call" aria-pressed="true">Call</button>
+        <button class="tab-button" type="button" data-tab="batter" aria-pressed="false">Vs Batter</button>
+        <button class="tab-button" type="button" data-tab="stats" aria-pressed="false">Stats</button>
+        <button class="tab-button" type="button" data-tab="data" aria-pressed="false">Data</button>
+      </nav>
 
-      <section class="field-grid" aria-label="Pitch call builder">
-        <div class="panel">
+      <section id="tab-call" class="tab-panel" data-panel="call">
+        <section class="context-strip" aria-label="Current game context">
+          <div>
+            <span class="context-label">Opponent</span>
+            <strong id="call-opponent">Opponent not set</strong>
+          </div>
+          <div>
+            <span class="context-label">Pitcher</span>
+            <strong id="call-pitcher">Pitcher 1</strong>
+          </div>
+          <div>
+            <span class="context-label">Batter</span>
+            <strong id="call-batter">1. Batter 1</strong>
+          </div>
+          <div class="batter-nav">
+            <button id="prev-batter" class="mini-button" type="button">Prev</button>
+            <button id="next-batter" class="mini-button" type="button">Next</button>
+          </div>
+        </section>
+
+        <section class="field-grid" aria-label="Pitch call builder">
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Pitch</h2>
+              <button id="clear-call" class="text-button" type="button" disabled>Clear</button>
+            </div>
+            <div id="pitch-options" class="option-grid pitch-grid"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Zone</h2>
+              <span id="selected-pitch" class="selected-label">No pitch</span>
+            </div>
+            <div id="zone-options" class="option-grid zone-grid"></div>
+          </div>
+        </section>
+
+        <section class="panel result-panel" aria-label="Pitch result">
           <div class="panel-heading">
-            <h2>Pitch</h2>
-            <button id="clear-call" class="text-button" type="button" disabled>Clear</button>
+            <h2>Result</h2>
+            <span id="pending-result-label" class="selected-label">No pitch pending</span>
           </div>
-          <div id="pitch-options" class="option-grid pitch-grid"></div>
-        </div>
+          <div id="result-options" class="result-groups"></div>
+        </section>
 
-        <div class="panel">
+        <section class="panel special-panel" aria-label="Special calls">
           <div class="panel-heading">
-            <h2>Zone</h2>
-            <span id="selected-pitch" class="selected-label">No pitch</span>
+            <h2>Special Calls</h2>
+            <span class="selected-label">Not logged as pitches</span>
           </div>
-          <div id="zone-options" class="option-grid zone-grid"></div>
-        </div>
+          <div id="special-call-options" class="option-grid special-grid"></div>
+        </section>
       </section>
 
-      <section class="panel result-panel" aria-label="Pitch result">
-        <div class="panel-heading">
-          <h2>Result</h2>
-          <span id="pending-result-label" class="selected-label">No pitch pending</span>
-        </div>
-        <div id="result-options" class="option-grid result-grid"></div>
+      <section id="tab-batter" class="tab-panel" data-panel="batter" hidden>
+        <section class="panel">
+          <div class="panel-heading">
+            <h2 id="batter-title">Vs Batter</h2>
+            <div class="batter-nav">
+              <button id="batter-prev" class="mini-button" type="button">Prev</button>
+              <button id="batter-next" class="mini-button" type="button">Next</button>
+            </div>
+          </div>
+          <div class="sequence-grid">
+            <div>
+              <h3>Current Sequence</h3>
+              <ol id="current-sequence" class="sequence-list"></ol>
+            </div>
+            <div>
+              <h3>Previous This Game</h3>
+              <ol id="previous-sequences" class="sequence-list"></ol>
+            </div>
+          </div>
+        </section>
       </section>
 
-      <section class="analytics-grid" aria-label="Pitch analytics">
-        <div class="panel stats-panel">
+      <section id="tab-stats" class="tab-panel" data-panel="stats" hidden>
+        <section class="panel stats-panel">
           <div class="panel-heading">
             <h2>Stats</h2>
             <div class="scope-toggle" role="group" aria-label="Stats scope">
@@ -98,22 +141,59 @@
               <button id="stats-cumulative" class="scope-button" type="button" data-stats-scope="cumulative" aria-pressed="false">Cumulative</button>
             </div>
           </div>
+          <div id="stats-context" class="stats-context"></div>
           <div id="stats-summary" class="stats-summary"></div>
           <div id="pitch-stats" class="pitch-stats"></div>
-        </div>
-
-        <div class="panel recent-panel">
-          <div class="panel-heading">
-            <h2>Recent</h2>
-            <button id="undo-last" class="text-button" type="button" disabled>Undo Last</button>
-          </div>
-          <ol id="recent-log" class="recent-log"></ol>
-        </div>
+        </section>
       </section>
 
-      <section class="last-call" aria-live="polite" aria-label="Last call">
-        <span class="last-label">Last</span>
-        <strong id="last-call-text">None</strong>
+      <section id="tab-data" class="tab-panel" data-panel="data" hidden>
+        <section class="data-grid" aria-label="Data management">
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Game</h2>
+              <button id="new-game" class="mini-button" type="button">New Game</button>
+            </div>
+            <label class="field-label" for="game-select">Current Game</label>
+            <select id="game-select" class="text-input"></select>
+            <label class="field-label" for="opponent-name">Opponent</label>
+            <input id="opponent-name" class="text-input" type="text" autocomplete="off" placeholder="Opponent name">
+            <p id="game-label" class="data-note">Game pending</p>
+          </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Pitchers</h2>
+              <button id="add-pitcher" class="mini-button" type="button">Add</button>
+            </div>
+            <label class="field-label" for="pitcher-select">Active Pitcher</label>
+            <select id="pitcher-select" class="text-input"></select>
+            <div class="action-row">
+              <button id="rename-pitcher" class="mini-button" type="button">Rename</button>
+              <button id="delete-pitcher" class="mini-button danger-text" type="button">Delete</button>
+            </div>
+          </div>
+
+          <div class="panel lineup-panel">
+            <div class="panel-heading">
+              <h2>Lineup</h2>
+              <span id="active-slot-label" class="selected-label">Slot 1 active</span>
+            </div>
+            <div id="lineup-editor" class="lineup-editor"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-heading">
+              <h2>Storage</h2>
+              <span id="storage-count" class="selected-label">No pitches</span>
+            </div>
+            <div class="action-row">
+              <button id="export-csv" class="mini-button" type="button">Export CSV</button>
+              <button id="clear-data" class="mini-button danger-text" type="button">Clear Tracking Data</button>
+            </div>
+            <p class="data-note">Audio/offline cache is kept when tracking data is cleared.</p>
+          </div>
+        </section>
       </section>
     </main>
 
