@@ -1,13 +1,14 @@
 importScripts("./config.js");
 
 const config = self.PITCH_CALLER_CONFIG;
-const SERVICE_WORKER_BUILD = "2026.06.06-v5";
+const SERVICE_WORKER_BUILD = "2026.06.07-v5.1";
 const CACHE_NAME = `pitch-caller-${config.version}-${SERVICE_WORKER_BUILD}`;
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./config.js",
+  "./audio-fix.js",
   "./app.js",
   "./manifest.json",
   "./icons/icon-192.png",

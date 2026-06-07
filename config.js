@@ -1,5 +1,5 @@
 globalThis.PITCH_CALLER_CONFIG = {
-  version: "2026.06.06-v5",
+  version: "2026.06.07-v5.1",
   appName: "Pitch Caller",
   audioBasePath: "audio",
   audioExtension: "m4a",
